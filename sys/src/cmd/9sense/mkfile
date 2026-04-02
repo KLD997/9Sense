@@ -1,0 +1,28 @@
+</$objtype/mkfile
+
+# Install to per-user path by default so 9sense is optional/user-managed.
+# Override BIN on mk command line to install elsewhere.
+BIN=/usr/$user/bin/$objtype
+
+TARG=9sense
+OFILES=\
+	main.$O\
+	data.$O\
+	fsys.$O\
+	scrl.$O\
+	time.$O\
+	util.$O\
+	wctl.$O\
+	wind.$O\
+	xfid.$O\
+
+HFILES=dat.h\
+	fns.h\
+
+</sys/src/cmd/mkone
+
+$O.out:	/$objtype/lib/libdraw.a /$objtype/lib/libframe.a \
+	/$objtype/lib/libthread.a /$objtype/lib/libplumb.a /$objtype/lib/libc.a
+syms:V:
+	$CC -a $CFLAGS main.c	> syms
+	$CC -aa $CFLAGS *.c 	>>syms
