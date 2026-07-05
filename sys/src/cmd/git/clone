@@ -56,7 +56,7 @@ fn clone{
 				outfile = ".git/" $2
 				outdir = outfile
 				gsub("/?[^/]*/?$", "", outdir)
-				system("mkdir -p "outdir)
+				system(sprintf("mkdir -p %q", outdir))
 				print $3 > outfile
 				close(outfile)
 			}
@@ -75,7 +75,7 @@ fn clone{
 				print headhash > ".git/HEAD"
 			}
 		}
-	'} |[3] tr '\x0d' '\x0a' || die 'could not clone repository'
+	'} |[3] tr '\x0d' '\x0a' >[1=2] || die 'could not clone repository'
 
 	tree=.git/fs/HEAD/tree
 	lbranch=`{git/branch}

@@ -22,7 +22,6 @@ static Ether *etherprobe(int cardno, int ctlrno, char *conf);
 static void dmatproxy(Block*, int, uchar*, DMAT*);
 
 static int etheroqsize(Ether*);
-static int etheriqsize(Ether*);
 
 static void
 drop(void*, Block *b)
@@ -121,7 +120,6 @@ etherclose(Chan* chan)
 		if(f->bypass){
 			qsetbypass(ether->oq, ether->link? nil: drop);
 			qsetlimit(ether->oq, etheroqsize(ether));
-			netifsetlimit(ether, etheriqsize(ether));
 		}
 	}
 	netifclose(ether, chan);
@@ -322,8 +320,6 @@ etherwrite(Chan* chan, void* buf, long n, vlong)
 		if(nn >= 0){
 			/* got bypassed? */
 			if(ether->f[NETID(chan->qid.path)]->bypass){
-				/* ignore mbps and use large input queue size */
-				netifsetlimit(ether, MB);
 				/* bypass output queue */
 				qsetbypass(ether->oq, bypass);
 			}
@@ -424,12 +420,6 @@ etheroqsize(Ether *ether)
 	return q;
 }
 
-static int
-etheriqsize(Ether *ether)
-{
-	return etheroqsize(ether) * 2;
-}
-
 static Ether*
 etherprobe(int cardno, int ctlrno, char *conf)
 {
@@ -485,13 +475,13 @@ Nope:
 
 	q = etheroqsize(ether);
 	if(ether->oq == nil){
-		ether->oq = qopen(q, Qmsg, (void (*)(void*))ether->transmit, ether);
+		ether->oq = qopen(q, Qmsg|Qkick, (void (*)(void*))ether->transmit, ether);
 		if(ether->oq == nil)
 			panic("etherreset %s: can't allocate output queue", ether->name);
 	} else {
 		qsetlimit(ether->oq, q);
 	}
-	netifinit(ether, ether->name, Ntypes, etheriqsize(ether));
+	netifinit(ether, ether->name, Ntypes, 8*MB);
 	ether->alen = Eaddrlen;
 	memmove(ether->addr, ether->ea, Eaddrlen);
 	memset(ether->bcast, 0xFF, Eaddrlen);
@@ -508,7 +498,6 @@ ethersetspeed(Ether *ether, int mbps)
 	if(mbps <= 0 || ether->f == nil || ether->oq == nil || ether->bypass)
 		return;
 	qsetlimit(ether->oq, etheroqsize(ether));
-	netifsetlimit(ether, etheriqsize(ether));
 }
 
 void
@@ -524,6 +513,10 @@ ethersetlink(Ether *ether, int new)
 		return;
 	memset(ether->mactab, 0, sizeof(ether->mactab));
 	qsetbypass(ether->oq, ether->link? nil: drop);
+
+	if(up == nil || !islo())
+		return;	/* should not print from interrupt */
+
 	if(ether->link)
 		print("#l%d: %s: link up: %dMbps\n",
 			ether->ctlrno, ether->type, ether->mbps);

@@ -1110,7 +1110,7 @@ ntohtcp6(Tcp *tcph, Block **bpp)
 	uchar *optr;
 	ushort hdrlen;
 	ushort optlen;
-	int n;
+	int n, len;
 
 	*bpp = pullupblock(*bpp, TCP6_PKT+TCP6_HDRSIZE);
 	if(*bpp == nil)
@@ -1123,6 +1123,7 @@ ntohtcp6(Tcp *tcph, Block **bpp)
 	tcph->ack = nhgetl(h->tcpack);
 	hdrlen = (h->tcpflag[0]>>2) & ~3;
 	if(hdrlen < TCP6_HDRSIZE) {
+Badlen:
 		freeblist(*bpp);
 		*bpp = nil;
 		return -1;
@@ -1133,7 +1134,10 @@ ntohtcp6(Tcp *tcph, Block **bpp)
 	tcph->mss = 0;
 	tcph->ws = 0;
 	tcph->update = 0;
-	tcph->len = nhgets(h->ploadlen) - hdrlen;
+	len = nhgets(h->ploadlen) - hdrlen;
+	if(len < 0)
+		goto Badlen;
+	tcph->len = len;
 
 	*bpp = pullupblock(*bpp, hdrlen+TCP6_PKT);
 	if(*bpp == nil)
@@ -1173,7 +1177,7 @@ ntohtcp4(Tcp *tcph, Block **bpp)
 	uchar *optr;
 	ushort hdrlen;
 	ushort optlen;
-	int n;
+	int n, len;
 
 	*bpp = pullupblock(*bpp, TCP4_PKT+TCP4_HDRSIZE);
 	if(*bpp == nil)
@@ -1187,6 +1191,7 @@ ntohtcp4(Tcp *tcph, Block **bpp)
 
 	hdrlen = (h->tcpflag[0]>>2) & ~3;
 	if(hdrlen < TCP4_HDRSIZE) {
+Badlen:
 		freeblist(*bpp);
 		*bpp = nil;
 		return -1;
@@ -1197,7 +1202,10 @@ ntohtcp4(Tcp *tcph, Block **bpp)
 	tcph->mss = 0;
 	tcph->ws = 0;
 	tcph->update = 0;
-	tcph->len = nhgets(h->length) - (hdrlen + TCP4_PKT);
+	len = nhgets(h->length) - (hdrlen + TCP4_PKT);
+	if(len < 0)
+		goto Badlen;
+	tcph->len = len;
 
 	*bpp = pullupblock(*bpp, hdrlen+TCP4_PKT);
 	if(*bpp == nil)
@@ -1935,7 +1943,7 @@ tcpiput(Proto *tcp, Ipifc *ifc, Block *bp)
 	Fs *f;
 	Tcppriv *tpriv;
 	char *reason;
-	int version;
+	int version, ttl, proto;
 
 	f = tcp->f;
 	tpriv = (Tcppriv*)tcp->priv;
@@ -1945,17 +1953,19 @@ tcpiput(Proto *tcp, Ipifc *ifc, Block *bp)
 	h6 = (Tcp6hdr*)(bp->rp);
 
 	if((h4->vihl&0xF0)==IP_VER4) {
-		int ttl = h4->ttl;
-
-		version = V4;
-		length = nhgets(h4->length);
-		if(length < TCP4_PKT){
+		if(BLEN(bp) < TCP4_PKT+TCP4_HDRSIZE){
+badhdr:
 			tpriv->stats[HlenErrs]++;
 			tpriv->stats[InErrs]++;
-			netlog(f, Logtcp, "bad tcp len\n");
+			netlog(f, Logtcp, "bad tcp header\n");
 			freeblist(bp);
 			return;
 		}
+		version = V4;
+		ttl = h4->ttl;
+		length = nhgets(h4->length);
+		if(length < TCP4_PKT)
+			goto badhdr;
 		length -= TCP4_PKT;
 		v4tov6(dest, h4->tcpdst);
 		v4tov6(source, h4->tcpsrc);
@@ -1983,10 +1993,12 @@ tcpiput(Proto *tcp, Ipifc *ifc, Block *bp)
 		hdrlen += TCP4_PKT;
 	}
 	else {
-		int ttl = h6->ttl;
-		int proto = h6->proto;
+		if(BLEN(bp) < TCP6_PKT+TCP6_HDRSIZE)
+			goto badhdr;
 
 		version = V6;
+		ttl = h6->ttl;
+		proto = h6->proto;
 		length = nhgets(h6->ploadlen);
 		ipmove(dest, h6->tcpdst);
 		ipmove(source, h6->tcpsrc);
@@ -2035,15 +2047,14 @@ reset:
 	}
 	if(iph->trans){
 		Translation *q;
-		int hop = h4->ttl;
 
-		if(hop <= 1 || (q = transbackward(tcp, iph)) == nil)
+		if(ttl <= 1 || (q = transbackward(tcp, iph)) == nil)
 			goto reset;
 		hnputs_csum(h4->tcpdst+0, nhgets(q->forward.raddr+IPv4off+0), h4->tcpcksum);
 		hnputs_csum(h4->tcpdst+2, nhgets(q->forward.raddr+IPv4off+2), h4->tcpcksum);
 		hnputs_csum(h4->tcpdport, q->forward.rport, h4->tcpcksum);
 		qunlock(tcp);
-		ipoput4(f, bp, ifc, hop - 1, h4->tos, q);
+		ipoput4(f, bp, ifc, ttl - 1, h4->tos, q);
 		return;
 	}
 	s = iphconv(iph);
@@ -2966,6 +2977,11 @@ tcpforward(Proto *tcp, Block *bp, Route *r)
 	ushort dp, sp;
 	Tcp4hdr *h4;
 	Translation *q;
+
+	if(BLEN(bp) < TCP4_PKT+TCP4_HDRSIZE){
+		freeblist(bp);
+		return nil;
+	}
 
 	h4 = (Tcp4hdr*)(bp->rp);
 	v4tov6(da, h4->tcpdst);

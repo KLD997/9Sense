@@ -27,7 +27,6 @@
 enum
 {
 	UDP_PHDRSIZE	= 12,	/* pseudo header */
-//	UDP_HDRSIZE	= 20,	/* pseudo header + udp header */
 	UDP_RHDRSIZE	= 36,	/* pseudo header + udp header + rudp header */
 	UDP_IPHDR	= 8,	/* ip header */
 	IP_UDPPROTO	= 254,
@@ -487,6 +486,13 @@ rudpiput(Proto *rudp, Ipifc *ifc, Block *bp)
 
 	upriv->ustats.rudpInDatagrams++;
 
+	if(BLEN(bp) < UDP_IPHDR+UDP_RHDRSIZE){
+		upriv->lenerr++;
+		upriv->ustats.rudpInErrors++;
+		netlog(f, Logrudp, "rudp: bad header\n");
+		freeblist(bp);
+		return;
+	}
 	uh = (Udphdr*)(bp->rp);
 
 	/* Put back pseudo header for checksum 
@@ -505,8 +511,8 @@ rudpiput(Proto *rudp, Ipifc *ifc, Block *bp)
 
 	if(nhgets(uh->udpcksum)) {
 		if(ptclcsum(bp, UDP_IPHDR, len+UDP_PHDRSIZE)) {
-			upriv->ustats.rudpInErrors++;
 			upriv->csumerr++;
+			upriv->ustats.rudpInErrors++;
 			netlog(f, Logrudp, "rudp: checksum error %I\n", raddr);
 			DPRINT("rudp: checksum error %I\n", raddr);
 			freeblist(bp);
@@ -535,17 +541,17 @@ rudpiput(Proto *rudp, Ipifc *ifc, Block *bp)
 
 	if(reliput(c, bp, raddr, rport) < 0){
 		qunlock(ucb);
-		freeb(bp);
+		freeblist(bp);
 		return;
 	}
 
 	/*
 	 * Trim the packet down to data size
 	 */
-
 	len -= (UDP_RHDRSIZE-UDP_PHDRSIZE);
 	bp = trimblock(bp, UDP_IPHDR+UDP_RHDRSIZE, len);
 	if(bp == nil) {
+		qunlock(ucb);
 		netlog(f, Logrudp, "rudp: len err %I.%d -> %I.%d\n", 
 			raddr, rport, laddr, lport);
 		DPRINT("rudp: len err %I.%d -> %I.%d\n", 

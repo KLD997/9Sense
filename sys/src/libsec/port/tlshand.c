@@ -1002,8 +1002,8 @@ tlsSecECDHEc(TlsSec *sec, int curve, Bytes *Ys)
 		}
 		setMasterSecret(sec, Z);
 	}else{
-		for(nc = namedcurves; nc->tlsid != curve; nc++)
-			if(nc == &namedcurves[nelem(namedcurves)])
+		for(nc = namedcurves; nc->tlsid != curve;)
+			if(++nc >= &namedcurves[nelem(namedcurves)])
 				return nil;
 		ecdominit(dom, nc->init);
 		pub = ecdecodepub(dom, Ys->data, Ys->len);
@@ -2310,7 +2310,7 @@ makeciphers(int ispsk)
 	Ints *is;
 	int i, j;
 
-	is = newints(nciphers);
+	is = newints(nciphers+1);
 	j = 0;
 	for(i = 0; i < nelem(cipherAlgs); i++)
 		if(cipherAlgs[i].ok && isPSK(cipherAlgs[i].tlsid) == ispsk)

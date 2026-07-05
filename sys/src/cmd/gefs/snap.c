@@ -149,43 +149,26 @@ putdl(Dlist *dl)
 }
 
 void
-freedl(Dlist *dl, int docontents)
+freedl(Dlist *dl)
 {
-	char buf[Kvmax];
 	Arena *a;
 	Qent qe;
 	Bptr bp;
-	Msg m;
 	Blk *b;
 	char *p;
 
 	bp = dl->hd;
-	if(dl->gen != -1){
-		m.op = Odelete;
-		dlist2kv(dl, &m, buf, sizeof(buf));
-		btupsert(&fs->snap, &m, 1);
-	}
 	while(bp.addr != -1){
 		b = getblk(bp, 0);
-		/*
-		 * Because these deadlists are dead-dead at this point,
-		 * they'll never be read from again; we can avoid worrying
-		 * about deferred reclamation, and queue them up to be freed
-		 * directly, which means we don't need to worry about watiing
-		 * for a quiescent state, and the associated out-of-block
-		 * deadlocks that come with it.
-		 */
-		if(docontents){
-			for(p = b->data; p != b->data+b->logsz; p += 8){
-				qe.op = Qfree;
-				qe.bp.addr = UNPACK64(p);
-				qe.bp.hash = -1;
-				qe.bp.gen = -1;
-				qe.b = nil;
-				a = getarena(qe.bp.addr);
-				qput(a->sync, qe);
-				traceb("dlclear", qe.bp);
-			}
+		for(p = b->data; p != b->data+b->logsz; p += 8){
+			qe.op = Qfree;
+			qe.bp.addr = UNPACK64(p);
+			qe.bp.hash = -1;
+			qe.bp.gen = -1;
+			qe.b = nil;
+			a = getarena(qe.bp.addr);
+			qput(a->sync, qe);
+			traceb("dlclear", qe.bp);
 		}
 		bp = b->logp;
 		qe.op = Qfree;
@@ -196,6 +179,23 @@ freedl(Dlist *dl, int docontents)
 		traceb("dlfreeb", qe.bp);
 		dropblk(b);
 	}
+}
+
+static void
+deferdl(vlong gen, vlong bgen)
+{
+	char buf[Kvmax];
+	Dlist *d;
+	Msg m;
+
+	d = getdl(gen, bgen);
+	m.op = Odelete;
+	dlist2kv(d, &m, buf, sizeof(buf));
+	btupsert(&fs->snap, &m, 1);
+	assert(d->ins == nil);
+	dlcachedel(d, 1);
+	fs->dlcount--;
+	limbo(DFdlist, d);
 }
 
 static void
@@ -279,7 +279,7 @@ reclaimblocks(vlong gen, vlong succ, vlong prev)
 		else if(dl.bgen <= prev)
 			mergedl(prev, dl.gen, dl.bgen);
 		else
-			freedl(&dl, 1);
+			deferdl(dl.gen, dl.bgen);
 		poperror();
 	}
 	btexit(&s);
@@ -298,7 +298,7 @@ reclaimblocks(vlong gen, vlong succ, vlong prev)
 				btexit(&s);
 				nexterror();
 			}
-			freedl(&dl, 1);
+			deferdl(dl.gen, dl.bgen);
 			poperror();
 		}
 		btexit(&s);
@@ -360,8 +360,9 @@ delsnap(Tree *t, vlong succ, char *name)
 		m[nm].nv = 0;
 		nm++;
 	}else{
-		m[nm].op = Oinsert;
-		tree2kv(t, &m[nm], buf[nm], sizeof(buf[nm]));
+		assert(name != nil);
+		m[nm].op = Orelink;
+		retag2kv(t->gen, t->succ, -1, 0, &m[nm], buf[nm], sizeof(buf[nm]));
 		nm++;
 	}
 	assert(nm <= nelem(m));
@@ -374,7 +375,7 @@ delsnap(Tree *t, vlong succ, char *name)
 			if(r->gen == t->succ)
 				r->pred = t->pred;
 			if(r->gen == t->pred)
-				r->succ = t->succ;
+				r->succ = succ;
 		}
 	}
 }
@@ -389,7 +390,7 @@ tagsnap(Tree *t, char *name, int flg)
 {
 	char buf[3][Kvmax];
 	Msg m[3];
-	Tree *n;
+	Tree n;
 	int i;
 
 	if(strcmp(name, "dump") == 0
@@ -398,20 +399,14 @@ tagsnap(Tree *t, char *name, int flg)
 		error(Ename);
 
 	i = 0;
-	n = nil;
 	if(flg & Lmut){
-		n = emalloc(sizeof(Tree), 1);
-		if(waserror()){
-			free(n);
-			nexterror();
-		}
-		aswapl(&n->memref, 1);
-		n->dirty = 0;
-		n->nlbl = 1;
-		n->nref = 0;
-		n->ht = t->ht;
-		n->bp = t->bp;
-		n->succ = -1;
+		memset(&n, 0, sizeof(Tree));
+		n.dirty = 0;
+		n.nlbl = 1;
+		n.nref = 0;
+		n.ht = t->ht;
+		n.bp = t->bp;
+		n.succ = -1;
 		/*
 		 * Because we can have blocks in-flight with gen==memgen,
 		 * which both sides of the fork can free, we need to make
@@ -420,22 +415,21 @@ tagsnap(Tree *t, char *name, int flg)
 		 * As a result, we need to use memgen, and not gen, in
 		 * order to prevent the potential for a double free.
 		 */
-		n->pred = t->gen;
-		n->base = t->memgen;
-		n->gen = fs->nextgen++;
-		n->memgen = fs->nextgen++;
+		n.pred = t->gen;
+		n.base = t->memgen;
+		n.gen = fs->nextgen++;
+		n.memgen = fs->nextgen++;
 
 		t->nref++;
 		m[i].op = Orelink;
 		retag2kv(t->gen, t->succ, 0, 1, &m[i], buf[i], sizeof(buf[i]));
 		i++;
 		m[i].op = Oinsert;
-		lbl2kv(name, n->gen, flg, &m[i], buf[i], sizeof(buf[i]));
+		lbl2kv(name, n.gen, flg, &m[i], buf[i], sizeof(buf[i]));
 		i++;
 		m[i].op = Oinsert;
-		tree2kv(n, &m[i], buf[i], sizeof(buf[i]));
+		tree2kv(&n, &m[i], buf[i], sizeof(buf[i]));
 		i++;
-		poperror();
 	}else{
 		t->nlbl++;
 
@@ -443,13 +437,11 @@ tagsnap(Tree *t, char *name, int flg)
 		retag2kv(t->gen, t->succ, 1, 0, &m[i], buf[i], sizeof(buf[i]));
 		i++;
 
-		t->pred = t->gen;
 		m[i].op = Oinsert;
 		lbl2kv(name, t->gen, flg, &m[i], buf[i], sizeof(buf[i]));
 		i++;
 	}
 	btupsert(&fs->snap, m, i);
-	free(n);
 }
 
 /*
@@ -519,7 +511,7 @@ updatesnap(Tree *o, char *lbl, int flg)
 	/* this was the last ref to the snap */
 	if(o->nlbl == 0 && o->nref == 1)
 		delsnap(o, t->gen, nil);
-	closesnap(o);
+	limbo(DFclose, o);
 	poperror();
 	return t;
 }
@@ -531,6 +523,7 @@ Tree*
 opensnap(char *label, int *flg)
 {
 	char *p, buf[Kvmax];
+	Mount *mnt;
 	Tree *t;
 	vlong gen;
 	Kvp kv;
@@ -547,6 +540,14 @@ opensnap(char *label, int *flg)
 	gen = UNPACK64(kv.v + 1);
 	if(flg != nil)
 		*flg = UNPACK32(kv.v + 1+8);
+
+	for(mnt = agetp(&fs->mounts); mnt != nil; mnt = mnt->next){
+		t = agetp(&mnt->root);
+		if(t->gen == gen){
+			aincl(&t->memref, 1);
+			return t;
+		}
+	}
 
 	t = mallocz(sizeof(Tree), 1);
 	if(waserror()){

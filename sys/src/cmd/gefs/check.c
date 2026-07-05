@@ -43,12 +43,12 @@ checktree(int fd, Blk *b, int h, Kvp *lo, Kvp *hi)
 			fprint(fd, "unbalanced leaf\n");
 			fail++;
 		}
-		if(h != 0 && b->nval < 2){
+		if(h != 0 && b->nval < 2 && debug){
 			fprint(fd, "warning: underfilled leaf %B\n", b->bp);
 			fail++;
 		}
 	}
-	if(b->type == Tpivot && b->nval < 2)
+	if(b->type == Tpivot && b->nval < 2 && debug)
 		fprint(fd, "warning: underfilled pivot %B\n", b->bp);
 	getval(b, 0, &x);
 	if(lo && keycmp(lo, &x) > 0){
@@ -258,7 +258,6 @@ checkfs(int fd)
 	Blk *b;
 
 	ok = 1;
-	epochwait();
 	qlock(&fs->mutlk);
 	if(waserror()){
 		fprint(fd, "error checking %s\n", errmsg());
@@ -284,6 +283,7 @@ checkfs(int fd)
 			break;
 		if(waserror()){
 			fprint(fd, "moving on: %s\n", errmsg());
+			ok = 0;
 			continue;
 		}
 		memcpy(name, s.kv.k+1, s.kv.nk-1);

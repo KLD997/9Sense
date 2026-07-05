@@ -36,6 +36,13 @@ struct Image
 	Image	*next;	/* next in list of windows */
 } Image;
 .PB
+typedef
+struct Warp
+{
+	long		m[3][3];
+	int		flags;
+} Warp;
+.PB
 typedef enum
 {
 	/* Porter-Duff compositing operators */
@@ -58,8 +65,6 @@ typedef enum
 .sp 0.1
 	Ncomp = 12,
 } Drawop;
-.PB
-typedef long	Warp[3][3];
 .PB
 .PD 0
 .ta +\w'\fL      'u +\w'\fL    'u +6n +4n
@@ -161,9 +166,9 @@ void	border(Image *dst, Rectangle r, int i, Image *color, Point sp)
 void	borderop(Image *dst, Rectangle r, int i, Image *color, Point sp,
 		Drawop op)
 .PB
-void	mkwarp(Warp w, double m[3][3])
+Warp	mkwarp(double m[3][3])
 .PB
-void	affinewarp(Image *dst, Rectangle r, Image *src, Point p, Warp w,
+void	affinewarp(Image *dst, Rectangle r, Image *src, Point p, Warp *w,
 		int smooth)
 .br
 .PB
@@ -744,7 +749,7 @@ The source is aligned so
 corresponds to
 .IB r .min .
 .TP
-.BI mkwarp( w\fP,\fP\ m\fP)
+.BI mkwarp( m )
 .I Mkwarp
 converts a 3×3 row-major matrix of
 .BR double s
@@ -753,8 +758,7 @@ converts a 3×3 row-major matrix of
 .BR Matrix )
 into the fixed-point representation required by
 .I affinewarp
-in
-.BR w ,
+and returns it,
 ignoring the last row which is always set to
 .B "[0 0 1]"
 for affine transformations.
@@ -762,11 +766,11 @@ for affine transformations.
 .BI affinewarp( dst\fP,\fP\ r\fP,\fP\ src\fP,\fP\ p\fP,\fP\ w\fP,\fP\ smooth\fP)
 .I Affinewarp
 applies an affine transformation defined by
-.B w
-to the
-.BR src ,
-and stores the result in the
-.BR dst .
+.I w
+to
+.IR src ,
+and stores the result in
+.IR dst .
 It follows the behavior of
 .I draw
 regarding the use of
@@ -774,10 +778,17 @@ regarding the use of
 and the
 .B repl
 bit, but applied to the affine mappings.
+The source is positioned so
+.I p
+in
+.I src
+corresponds to
+.IB dst ->r.min\fR,
+which is treated as the origin for the affine transformation.
 If
-.B smooth
-is set, each sample will be interpolated for better quality, which
-will make the transformation slower.
+.I smooth
+is set, a bilinear interpolation filter will be used to sample
+.IR src .
 .TP
 .BI string( dst\fP,\fP\ p\fP,\fP\ src\fP,\fP\ sp\fP,\fP\ font\fP,\fP\ s )
 .I String

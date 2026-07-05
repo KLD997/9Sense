@@ -14,7 +14,7 @@ typedef struct	Rectangle Rectangle;
 typedef struct	RGB RGB;
 typedef struct	Screen Screen;
 typedef struct	Subfont Subfont;
-typedef long	Warp[3][3];
+typedef struct	Warp Warp;
 
 #pragma incomplete Mouse
 
@@ -142,9 +142,18 @@ enum {
 	RGBA32	= CHAN4(CRed, 8, CGreen, 8, CBlue, 8, CAlpha, 8),
 	ARGB32	= CHAN4(CAlpha, 8, CRed, 8, CGreen, 8, CBlue, 8),	/* stupid VGAs */
 	XRGB32	= CHAN4(CIgnore, 8, CRed, 8, CGreen, 8, CBlue, 8),
+	BGR15	= CHAN4(CIgnore, 1, CBlue, 5, CGreen, 5, CRed, 5),	/* beloved GBA */
 	BGR24	= CHAN3(CBlue, 8, CGreen, 8, CRed, 8),
 	ABGR32	= CHAN4(CAlpha, 8, CBlue, 8, CGreen, 8, CRed, 8),
 	XBGR32	= CHAN4(CIgnore, 8, CBlue, 8, CGreen, 8, CRed, 8),
+};
+
+/*
+ * Warp flags used to enable optimized paths
+ * based on the encoded affine map's properties.
+ */
+enum {
+	WFintupscale	= 1,	/* integer upscaling */
 };
 
 extern	char*	chantostr(char*, ulong);
@@ -222,6 +231,12 @@ struct RGB
 	ulong	red;
 	ulong	green;
 	ulong	blue;
+};
+
+struct Warp
+{
+	long	m[3][3];
+	int	flags;		/* set by mkwarp(2). do not touch */
 };
 
 /*
@@ -456,8 +471,8 @@ extern void	fillarc(Image*, Point, int, int, Image*, Point, int, int);
 extern void	fillarcop(Image*, Point, int, int, Image*, Point, int, int, Drawop);
 extern void	border(Image*, Rectangle, int, Image*, Point);
 extern void	borderop(Image*, Rectangle, int, Image*, Point, Drawop);
-extern void	mkwarp(Warp, double[3][3]);
-extern void	affinewarp(Image*, Rectangle, Image*, Point, Warp, int);
+extern Warp	mkwarp(double[3][3]);
+extern void	affinewarp(Image*, Rectangle, Image*, Point, Warp*, int);
 
 /*
  * Font management

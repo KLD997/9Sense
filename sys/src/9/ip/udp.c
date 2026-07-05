@@ -328,7 +328,6 @@ udpkick(void *x, Block *bp)
 void
 udpiput(Proto *udp, Ipifc *ifc, Block *bp)
 {
-	int len;
 	Udp4hdr *uh4;
 	Udp6hdr *uh6;
 	Iphash *iph;
@@ -338,9 +337,8 @@ udpiput(Proto *udp, Ipifc *ifc, Block *bp)
 	ushort rport, lport;
 	Udppriv *upriv;
 	Fs *f;
-	int version;
-	int ottl, oviclfl, olen;
 	uchar *p;
+	int version, ottl, oviclfl, olen, len;
 
 	upriv = udp->priv;
 	f = udp->f;
@@ -354,6 +352,14 @@ udpiput(Proto *udp, Ipifc *ifc, Block *bp)
 	 * (remember old values for icmpnoconv()) */
 	switch(version) {
 	case V4:
+		if(BLEN(bp) < UDP4_IPHDR_SZ+UDP_UDPHDR_SZ){
+Badhdr:
+			upriv->lenerr++;
+			upriv->ustats.udpInErrors++;
+			netlog(f, Logudp, "udp: bad header\n");
+			freeblist(bp);
+			return;
+		}
 		ottl = uh4->ttl;
 		uh4->ttl = 0;
 		len = nhgets(uh4->udplen);
@@ -367,6 +373,8 @@ udpiput(Proto *udp, Ipifc *ifc, Block *bp)
 
 		if(nhgets(uh4->udpcksum)) {
 			if(ptclcsum(bp, UDP4_PHDR_OFF, len+UDP4_PHDR_SZ)) {
+Badcrc:
+				upriv->csumerr++;
 				upriv->ustats.udpInErrors++;
 				netlog(f, Logudp, "udp: checksum error %I\n", raddr);
 				DPRINT("udp: checksum error %I\n", raddr);
@@ -378,6 +386,8 @@ udpiput(Proto *udp, Ipifc *ifc, Block *bp)
 		hnputs(uh4->udpplen, olen);
 		break;
 	case V6:
+		if(BLEN(bp) < UDP6_IPHDR_SZ+UDP_UDPHDR_SZ)
+			goto Badhdr;
 		len = nhgets(uh6->udplen);
 		oviclfl = nhgetl(uh6->viclfl);
 		olen = nhgets(uh6->len);
@@ -389,13 +399,8 @@ udpiput(Proto *udp, Ipifc *ifc, Block *bp)
 		memset(uh6, 0, 8);
 		hnputl(uh6->viclfl, len);
 		uh6->hoplimit = IP_UDPPROTO;
-		if(ptclcsum(bp, UDP6_PHDR_OFF, len+UDP6_PHDR_SZ)) {
-			upriv->ustats.udpInErrors++;
-			netlog(f, Logudp, "udp: checksum error %I\n", raddr);
-			DPRINT("udp: checksum error %I\n", raddr);
-			freeblist(bp);
-			return;
-		}
+		if(ptclcsum(bp, UDP6_PHDR_OFF, len+UDP6_PHDR_SZ))
+			goto Badcrc;
 		hnputl(uh6->viclfl, oviclfl);
 		hnputs(uh6->len, olen);
 		uh6->nextheader = IP_UDPPROTO;
@@ -628,6 +633,11 @@ udpforward(Proto *udp, Block *bp, Route *r)
 	ushort dp, sp;
 	Udp4hdr *uh4;
 	Translation *q;
+
+	if(BLEN(bp) < UDP4_IPHDR_SZ+UDP_UDPHDR_SZ){
+		freeblist(bp);
+		return nil;
+	}
 
 	uh4 = (Udp4hdr*)(bp->rp);
 	v4tov6(sa, uh4->udpsrc);

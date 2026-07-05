@@ -42,6 +42,9 @@ char Eauthph[]	= "auth phase error";
 char Enone[]	= "auth -- user 'none' requires no authentication";
 char Enoauth[]	= "auth -- authentication disabled";
 char Ephase[]	= "phase error -- use after remove";
+char Ecdir[]	= "create -- in a non-directory";
+char Ectl[]	= "invalid control message";
+char Enoqid[]	= "qids exhausted";
 
 char Ewstatb[]	= "wstat -- unknown bits in qid.type/mode";
 char Ewstatd[]	= "wstat -- attempt to change directory";
@@ -53,6 +56,7 @@ char Ewstatp[]	= "wstat -- attempt to change qid.path";
 char Ewstatq[]	= "wstat -- qid.type/dir.mode mismatch";
 char Ewstatu[]	= "wstat -- not owner";
 char Ewstatv[]	= "wstat -- attempt to change qid.vers";
+char Ewstatt[]	= "wstat -- attempt to change qid.type";
 char Enempty[]	= "directory is not empty";
 
 //char Echar[]		= "bad character in directory name";
@@ -63,7 +67,6 @@ char Enempty[]	= "directory is not empty";
 //char Eaccess[]	= "access permission denied";
 //char Eentry[]		= "directory entry not found";
 //char Edir1[]		= "walk -- in a non-directory";
-//char Edir2[]		= "create -- in a non-directory";
 //char Edot[]		= "create/wstat -- . and .. illegal names";
 //char Ewalk[]		= "walk -- too many (system wide)";
 //char Eoffset[]	= "read/write -- offset negative";

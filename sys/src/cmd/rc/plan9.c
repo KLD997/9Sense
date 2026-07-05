@@ -109,8 +109,10 @@ execrfork(void)
 	} else {
 		if(arg & RFCFDG){
 			redir *rp;
-			for(rp = runq->redir; rp; rp = rp->next)
+			for(rp = runq->redir; rp; rp = rp->next){
+				rp->from = rp->to = -1;
 				rp->type = 0;
+			}
 		}
 		setstatus("");
 	}
@@ -122,9 +124,8 @@ Env(char *name, int fn)
 {
 	static char buf[128];
 
-	strcpy(buf, "/env/");
-	if(fn) strcat(buf, "fn#");
-	return strncat(buf, name, sizeof(buf)-1);
+	snprint(buf, sizeof buf, "/env/%s%s", fn ? "fn#" : "", name);
+	return buf;
 }
 
 void

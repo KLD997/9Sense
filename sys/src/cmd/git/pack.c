@@ -401,7 +401,7 @@ decompress(void **p, Biobuf *b, vlong *csz)
 	return d.len;
 }
 
-static int
+static vlong
 readvint(char *p, char *ep, char **pp)
 {
 	int s, c;
@@ -435,7 +435,7 @@ applydelta(Object *dst, Object *base, char *d, int nd)
 	}
 
 	nr = readvint(d, ed, &d);
-	if(nr == -1 || n >= 1LL << 31){
+	if(nr == -1 || nr >= 1LL << 31){
 		werrstr("invalid pack: %r");
 		return -1;
 	}
@@ -455,18 +455,18 @@ applydelta(Object *dst, Object *base, char *d, int nd)
 			o = 0;
 			l = 0;
 			/* Offset in base */
-			if(d != ed && (c & 0x01)) o |= (*d++ & 0xff) <<  0;
-			if(d != ed && (c & 0x02)) o |= (*d++ & 0xff) <<  8;
-			if(d != ed && (c & 0x04)) o |= (*d++ & 0xff) << 16;
-			if(d != ed && (c & 0x08)) o |= (*d++ & 0xff) << 24;
+			if(d != ed && (c & 0x01)) o |= *(uchar*)d++ <<  0;
+			if(d != ed && (c & 0x02)) o |= *(uchar*)d++ <<  8;
+			if(d != ed && (c & 0x04)) o |= *(uchar*)d++ << 16;
+			if(d != ed && (c & 0x08)) o |= *(uchar*)d++ << 24;
 
 			/* Length to copy */
-			if(d != ed && (c & 0x10)) l |= (*d++ & 0xff) <<  0;
-			if(d != ed && (c & 0x20)) l |= (*d++ & 0xff) <<  8;
-			if(d != ed && (c & 0x40)) l |= (*d++ & 0xff) << 16;
+			if(d != ed && (c & 0x10)) l |= *(uchar*)d++ <<  0;
+			if(d != ed && (c & 0x20)) l |= *(uchar*)d++ <<  8;
+			if(d != ed && (c & 0x40)) l |= *(uchar*)d++ << 16;
 			if(l == 0) l = 0x10000;
 
-			if(o < 0 || l < 0 || o + l > base->size){
+			if(o < 0 || l < 0 || l > er - r || o + l > base->size){
 				werrstr("garbled delta: out of bounds copy");
 				return -1;
 			}
@@ -474,7 +474,7 @@ applydelta(Object *dst, Object *base, char *d, int nd)
 			r += l;
 		/* inline data */
 		}else{
-			if(c > ed - d){
+			if(c > ed - d || c > er - r){
 				werrstr("garbled delta: write past object");
 				return -1;
 			}
@@ -565,9 +565,8 @@ error:
 static int
 readpacked(Biobuf *f, Object *o, int flag)
 {
-	int c, s, n;
+	int c, s, n, t;
 	vlong l, p;
-	int t;
 	Buf b;
 
 	p = Boffset(f);
@@ -584,7 +583,7 @@ readpacked(Biobuf *f, Object *o, int flag)
 	while(c & 0x80){
 		if((c = Bgetc(f)) == -1)
 			return -1;
-		l |= (c & 0x7f) << s;
+		l |= (vlong)(c & 0x7f) << s;
 		s += 7;
 	}
 	if(l >= (1ULL << 32)){
@@ -698,8 +697,9 @@ hashcmp(uchar *a, uchar *b, uint nbit)
 vlong
 searchindex(char *idx, int nidx, Hash h, int npfx, Hash *hret)
 {
-	int lo, hi, hidx, i, r, nent;
-	vlong o, oo;
+	uint lo, hi, hidx;
+	vlong o, oo, nent;
+	int i, r;
 	void *s;
 
 	o = 8;
@@ -726,7 +726,7 @@ searchindex(char *idx, int nidx, Hash h, int npfx, Hash *hret)
 	}
 	if(hi == lo)
 		goto notfound;
-	nent=GETBE32(idx + 8 + 255*4);
+	nent = GETBE32(idx + 8 + 255*4);
 
 	/*
 	 * Now that we know the range of hashes that the
@@ -891,7 +891,7 @@ parsecommit(Object *o)
 
 	p = o->data;
 	np = o->size;
-	o->commit = emalloc(sizeof(Cinfo));
+	o->commit = emalloc(sizeof(Ocommit));
 	while(1){
 		if(scanword(&p, &np, buf, sizeof(buf)) == -1)
 			break;
@@ -931,6 +931,22 @@ parsecommit(Object *o)
 	o->commit->nmsg = np;
 }
 
+static int
+validname(char *s)
+{
+	if(*s == 0)
+		return 0;
+	if(strcmp(s, ".") == 0 || strcmp(s, "..") == 0)
+		return 0;
+	for(; *s; s++){
+		if((*s&0xff) < 0x20 || *s == 0x7f || *s == '/'){
+			werrstr("invalid character in path element: %02x", *(uchar*)s);
+			return 0;
+		}
+	}
+	return 1;
+}
+
 static void
 parsetree(Object *o)
 {
@@ -944,7 +960,7 @@ parsetree(Object *o)
 	nent = 0;
 	entsz = 16;
 	ent = eamalloc(entsz, sizeof(Dirent));	
-	o->tree = emalloc(sizeof(Tinfo));
+	o->tree = emalloc(sizeof(Otree));
 	while(p != ep){
 		if(nent == entsz){
 			entsz *= 2;
@@ -978,6 +994,8 @@ parsetree(Object *o)
 		}
 		if(m & 0040000) /* dir */
 			t->mode |= DMDIR;
+		if(!validname(p))
+			sysfatal("invalid entry: %r");
 		t->name = p;
 		p = memchr(p, 0, ep - p);
 		if(p == nil || *p++ != 0 ||  ep - p < sizeof(t->h.h))
@@ -1625,7 +1643,8 @@ static int
 encodedelta(Meta *m, Object *o, Object *b, void **pp)
 {
 	char *p, *bp, buf[16];
-	int len, sz, n, i, j;
+	int len, sz, i, j;
+	vlong n;
 	Delta *d;
 
 	sz = 128;
@@ -1655,6 +1674,7 @@ encodedelta(Meta *m, Object *o, Object *b, void **pp)
 		d = &m->delta[j];
 		if(d->cpy){
 			n = d->off;
+			assert(n < (1ULL<<32));
 			bp = buf + 1;
 			buf[0] = 0x81;
 			buf[1] = 0x00;
@@ -1667,6 +1687,7 @@ encodedelta(Meta *m, Object *o, Object *b, void **pp)
 			}
 
 			n = d->len;
+			assert(n < (1ULL<<24));
 			if(n != 0x10000) {
 				buf[0] |= 0x1<<4;
 				for(i = 0; i < sizeof(buf)-4 && n > 0; i++){

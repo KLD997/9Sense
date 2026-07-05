@@ -197,7 +197,7 @@ execfmt(void *pm)
 	dup(m->fd[1], 1);
 	close(m->fd[0]);
 	close(m->fd[1]);
-	procexecl(m->sync, "/bin/htmlfmt", "htmlfmt", "-a", "-cutf-8", m->path, nil);
+	procexecl(m->sync, "/bin/htmlfmt", "htmlfmt", "-cutf-8", m->path, nil);
 }
 
 static int
@@ -290,7 +290,7 @@ mesgshow(Mesg *m)
 		if((suff = strchr(name, '.')) == nil)
 			suff = "";
 		if(strcmp(a->type, "text/html") == 0)
-			Bprint(wfd, "\thtmlfmt -a %s%sbody.html\n", mbox.path, a->name);
+			Bprint(wfd, "\thtmlfmt %s%sbody.html\n", mbox.path, a->name);
 		else
 			Bprint(wfd, "\tcp %s%sbody%s %s/%s\n", mbox.path, a->name, suff, home, name);
 		continue;

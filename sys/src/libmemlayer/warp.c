@@ -9,7 +9,7 @@ struct Draw
 	Memlayer	*dstlayer;
 	Memimage	*src;
 	Point		sp;
-	Warp		warp;
+	Warp		*warp;
 	int		smooth;
 };
 
@@ -39,7 +39,7 @@ ldrawop(Memimage *dst, Rectangle screenr, Rectangle clipr, void *etc, int insave
 }
 
 void
-memlaffinewarp(Memimage *dst, Rectangle r, Memimage *src, Point p0, Warp w, int smooth)
+memlaffinewarp(Memimage *dst, Rectangle r, Memimage *src, Point p0, Warp *w, int smooth)
 {
 	struct Draw d;
 	Rectangle srcr, tr;
@@ -50,6 +50,13 @@ memlaffinewarp(Memimage *dst, Rectangle r, Memimage *src, Point p0, Warp w, int 
 		memaffinewarp(dst, r, src, p0, w, smooth);
 		return;
 	}
+
+	if(badrect(r))
+		return;
+	if(!rectclip(&r, dst->r) || !rectclip(&r, dst->clipr))
+		return;
+
+	srcr = src->clipr;
 
 	/*
  	 * Convert to screen coordinates.
@@ -84,7 +91,7 @@ memlaffinewarp(Memimage *dst, Rectangle r, Memimage *src, Point p0, Warp w, int 
 
 	/*
 	 * Now everything is in screen coordinates.
-	 * mask is an image.  dst and src are images or obscured layers.
+	 * dst and src are images or obscured layers.
 	 */
 
 	/*
@@ -109,7 +116,7 @@ memlaffinewarp(Memimage *dst, Rectangle r, Memimage *src, Point p0, Warp w, int 
 			memlhide(dst, srcr);
 		}
 		memlaffinewarp(dl->save, rectsubpt(r, dl->delta), dl->save,
-			subpt(srcr.min, src->layer->delta), w, smooth);
+			subpt(p0, sl->delta), w, smooth);
 		memlexpose(dst, r);
 		return;
 	}
@@ -153,7 +160,7 @@ memlaffinewarp(Memimage *dst, Rectangle r, Memimage *src, Point p0, Warp w, int 
 	d.dstlayer = dl;
 	d.src = src;
 	d.sp = p0;
-	memmove(d.warp, w, sizeof(Warp));
+	d.warp = w;
 	d.smooth = smooth;
 	_memlayerop(ldrawop, dst, r, r, &d);
 }

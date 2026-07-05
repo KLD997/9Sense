@@ -176,20 +176,22 @@ extern char Elocked[];
 extern char Eauthp[];
 extern char Eauthd[];
 extern char Eauthph[];
-extern char Ephase[];
 extern char Enone[];
 extern char Enoauth[];
+extern char Ephase[];
+extern char Ecdir[];
+extern char Ectl[];
+extern char Enoqid[];
 
+extern char Ewstatt[];
 extern char Ewstatb[];
 extern char Ewstatd[];
 extern char Ewstatg[];
 extern char Ewstatl[];
 extern char Ewstatm[];
 extern char Ewstato[];
-extern char Ewstatp[];
 extern char Ewstatq[];
 extern char Ewstatu[];
-extern char Ewstatv[];
 extern char Enempty[];
 
 /*
@@ -343,6 +345,8 @@ enum {
 	DFbp,
 	DFmnt,
 	DFtree,
+	DFclose,
+	DFdlist,
 };
 
 struct Limbo {
@@ -377,6 +381,7 @@ struct Msg {
 };
 
 struct Dlist {
+	Limbo;
 	Dlist	*cnext;	/* cache next entry */
 	Dlist	*cprev;	/* cache prev entry */
 	Dlist	*chain;	/* hash table chain */

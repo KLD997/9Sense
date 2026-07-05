@@ -13,15 +13,16 @@
 extern void i8259init(void);
 
 /* filled in by pcmpinit or acpiinit */
-Bus* mpbus;
-Bus* mpbuslast;
 int mpisabus = -1;
 int mpeisabus = -1;
-Apic *mpioapic[MaxAPICNO+1];
-Apic *mpapic[MaxAPICNO+1];
+Bus* mpbus, **mpbusp = &mpbus;
+Apic *mpioapic, **mpioapicp = &mpioapic;
+Apic *mplapic, **mplapicp = &mplapic;
+
+static int nmplapic;
 
 int
-mpintrinit(Bus* bus, PCMPintr* intr, int vno, int /*irq*/)
+mpintrinit(Aintr *intr, int vno, int /*irq*/)
 {
 	int el, po, v;
 
@@ -34,7 +35,7 @@ mpintrinit(Bus* bus, PCMPintr* intr, int vno, int /*irq*/)
 	po = intr->flags & PcmpPOMASK;
 	el = intr->flags & PcmpELMASK;
 
-	switch(intr->intr){
+	switch(intr->type){
 	default:				/* PcmpINT */
 		v |= ApicFIXED;			/* no-op */
 		break;
@@ -68,12 +69,12 @@ mpintrinit(Bus* bus, PCMPintr* intr, int vno, int /*irq*/)
 
 	/*
 	 */
-	if(bus->type == BusEISA && !po && !el /*&& !(i8259elcr & (1<<irq))*/){
+	if(intr->bus->type == BusEISA && !po && !el /*&& !(i8259elcr & (1<<irq))*/){
 		po = PcmpHIGH;
 		el = PcmpEDGE;
 	}
 	if(!po)
-		po = bus->po;
+		po = intr->bus->po;
 	if(po == PcmpLOW)
 		v |= ApicLOW;
 	else if(po != PcmpHIGH){
@@ -82,7 +83,7 @@ mpintrinit(Bus* bus, PCMPintr* intr, int vno, int /*irq*/)
 	}
 
 	if(!el)
-		el = bus->el;
+		el = intr->bus->el;
 	if(el == PcmpLEVEL)
 		v |= ApicLEVEL;
 	else if(el != PcmpEDGE){
@@ -126,7 +127,7 @@ syncclock(void)
 void
 mpinit(void)
 {
-	int ncpu, i;
+	int ncpu;
 	Apic *apic;
 	char *cp;
 
@@ -136,40 +137,32 @@ mpinit(void)
 	if(getconf("*apicdebug")){
 		Bus *b;
 		Aintr *ai;
-		PCMPintr *pi;
 
-		for(i=0; i<=MaxAPICNO; i++){
-			if(apic = mpapic[i])
-				print("LAPIC%d: pa=%lux va=%#p flags=%x\n",
-					i, apic->paddr, apic->addr, apic->flags);
-			if(apic = mpioapic[i])
-				print("IOAPIC%d: pa=%lux va=%#p flags=%x gsibase=%d mre=%d\n",
-					i, apic->paddr, apic->addr, apic->flags, apic->gsibase, apic->mre);
-		}
-		for(b = mpbus; b; b = b->next){
+		for(apic = mplapic; apic != nil; apic = apic->next)
+			print("LAPIC%d: pa=%lux va=%#p flags=%x\n",
+				apic->apicno, apic->paddr, apic->addr, apic->flags);
+		for(apic = mpioapic; apic != nil; apic = apic->next)
+			print("IOAPIC%d: pa=%lux va=%#p flags=%x gsibase=%d mre=%d\n",
+				apic->apicno, apic->paddr, apic->addr, apic->flags, apic->gsibase, apic->mre);
+		for(b = mpbus; b != nil; b = b->next){
 			print("BUS%d type=%d flags=%x\n", b->busno, b->type, b->po|b->el);
 			for(ai = b->aintr; ai; ai = ai->next){
-				if(pi = ai->intr)
-					print("\ttype=%d irq=%d (%d [%c]) apic=%d intin=%d flags=%x\n",
-						pi->type, pi->irq, pi->irq>>2, "ABCD"[pi->irq&3],
-						pi->apicno, pi->intin, pi->flags);
+				print("\ttype=%d irq=%d (%d [%c]) gsi=%d apic=%d intin=%d flags=%x\n",
+					ai->type, ai->irq, ai->irq>>2, "ABCD"[ai->irq&3],
+					ai->gsi, ai->apic->apicno, ai->intin, ai->flags);
 			}
 		}
 	}
 
-	apic = nil;
-	for(i=0; i<=MaxAPICNO; i++){
-		if(mpapic[i] == nil)
-			continue;
-		if(mpapic[i]->flags & PcmpBP){
-			apic = mpapic[i];
-			break;
-		}
-	}
+	nmplapic = 0;
+	for(apic = mplapic; apic != nil; apic = apic->next)
+		nmplapic++;
 
-	if(apic == nil){
-		panic("mpinit: no bootstrap processor");
-	}
+	for(apic = mplapic; apic != nil; apic = apic->next)
+		if(apic->flags & PcmpBP)
+			break;
+	if(apic == nil)
+		panic("mpinit: no bootstrap processor (%d processors found)", nmplapic);
 	apic->online = 1;
 
 	lapicinit(apic);
@@ -197,9 +190,7 @@ mpinit(void)
 	else
 		ncpu = MAXMACH;
 	memmove((void*)APBOOTSTRAP, apbootstrap, sizeof(apbootstrap));
-	for(i=0; i<nelem(mpapic); i++){
-		if((apic = mpapic[i]) == nil)
-			continue;
+	for(apic = mplapic; apic != nil; apic = apic->next){
 		if(apic->machno >= MAXMACH)
 			continue;
 		if(ncpu <= 1)
@@ -223,10 +214,10 @@ mpinit(void)
 }
 
 static int
-mpintrcpu(void)
+allocdest(int *pmachno)
 {
-	static Lock physidlock;
-	static int physid;
+	static Apic *apic;
+	static Lock l;
 	int i;
 
 	/*
@@ -246,19 +237,22 @@ mpintrcpu(void)
 	 * to more than one thread in a core, or to use a "noise" core.
 	 * But, as usual, Intel make that an onerous task. 
 	 */
-	lock(&physidlock);
-	for(;;){
-		i = physid++;
-		if(physid >= nelem(mpapic))
-			physid = 0;
-		if(mpapic[i] == nil)
-			continue;
-		if(mpapic[i]->online)
+	lock(&l);
+	for(i=1;;i++){
+		if(apic == nil)
+			apic = mplapic;
+		if(apic->online && apic->apicno <= MaxAPICNO)
 			break;
+		if(i >= nmplapic)
+			return -1;
+		apic = apic->next;
 	}
-	unlock(&physidlock);
+	*pmachno = apic->machno;
+	i = apic->apicno;
+	apic = apic->next;
+	unlock(&l);
 
-	return mpapic[i]->apicno;
+	return i;
 }
 
 /*
@@ -299,10 +293,10 @@ ioapicirqenable(Vctl *v, int shared)
 
 	if(shared)
 		return 0;
-	hi = v->cpu<<24;
-	lo = mpintrinit(aintr->bus, aintr->intr, v->vno, v->irq);
+	hi = (v->dest & 0xFF) << 24;
+	lo = mpintrinit(aintr, v->vno, v->irq);
 	lo |= ApicPHYSICAL;			/* no-op */
- 	ioapicrdtw(aintr->apic, aintr->intr->intin, hi, lo);
+ 	ioapicrdtw(aintr->apic, aintr->intin, hi, lo);
 	return 0;
 }
 
@@ -316,7 +310,7 @@ ioapicirqdisable(Vctl *v, int shared)
 		return 0;
 	hi = 0;
 	lo = ApicIMASK;
- 	ioapicrdtw(aintr->apic, aintr->intr->intin, hi, lo);
+ 	ioapicrdtw(aintr->apic, aintr->intin, hi, lo);
 	return 0;
 }
 
@@ -389,7 +383,7 @@ Findbus:
 	 * attached to this bus.
 	 */
 	for(aintr = bus->aintr; aintr != nil; aintr = aintr->next){
-		if(aintr->intr->irq != irq)
+		if(aintr->irq != irq)
 			continue;
 
 		/*
@@ -397,31 +391,35 @@ Findbus:
 		 * INT[A-D]# so, if already enabled, check the polarity matches
 		 * and the trigger is level.
 		 */
-		ioapicrdtr(aintr->apic, aintr->intr->intin, &hi, &lo);
+		ioapicrdtr(aintr->apic, aintr->intin, &hi, &lo);
 		if(lo & ApicIMASK){
+			v->dest = allocdest(&v->machno);
+			if(v->dest < 0){
+				print("mpintrassign: no destination irq %d, tbdf %T, lo %8.8uX, hi %8.8uX\n",
+					v->irq, v->tbdf, lo, hi);
+				break;
+			}
 			v->vno = allocvector();
-			v->cpu = mpintrcpu();
-			lo = mpintrinit(aintr->bus, aintr->intr, v->vno, v->irq);
+			lo = mpintrinit(aintr, v->vno, v->irq);
 			lo |= ApicPHYSICAL;			/* no-op */
 			if(lo & ApicIMASK){
-				print("mpintrassign: disabled irq %d, tbdf %uX, lo %8.8uX, hi %8.8uX\n",
+				print("mpintrassign: disabled irq %d, tbdf %T, lo %8.8uX, hi %8.8uX\n",
 					v->irq, v->tbdf, lo, hi);
 				break;
 			}
 		} else {
+			v->dest = (hi >> 24) & 0xFF;
 			v->vno = lo & 0xFF;
-			v->cpu = hi >> 24;
 			lo &= ~(ApicRemoteIRR|ApicDELIVS);
-			n = mpintrinit(aintr->bus, aintr->intr, v->vno, v->irq);
+			n = mpintrinit(aintr, v->vno, v->irq);
 			n |= ApicPHYSICAL;			/* no-op */
 			if(lo != n){
-				print("mpintrassign: multiple botch irq %d, tbdf %uX, lo %8.8uX, n %8.8uX\n",
+				print("mpintrassign: multiple botch irq %d, tbdf %T, lo %8.8uX, n %8.8uX\n",
 					v->irq, v->tbdf, lo, n);
 				break;
 			}
 		}
 
-		v->isr = lapicisr;
 		v->eoi = lapiceoi;
 
 		if((aintr->apic->flags & PcmpEN) && aintr->apic->type == PcmpIOAPIC){
@@ -499,7 +497,7 @@ static int
 msiirqenable(Vctl *v, int)
 {
 	Pcidev *pci = v->aux;
-	return pcimsienable(pci, 0xFEE00000ULL | (v->cpu << 12), v->vno | (1<<14));
+	return pcimsienable(pci, 0xFEE00000ULL | (v->dest & 0xFF) << 12, v->vno | (1<<14));
 }
 
 static int
@@ -523,7 +521,7 @@ msiintrenable(Vctl *v)
 		return -1;
 	pci = pcimatchtbdf(tbdf);
 	if(pci == nil) {
-		print("msiintrenable: could not find Pcidev for tbdf %uX\n", tbdf);
+		print("msiintrenable: could not find Pcidev for tbdf %T\n", tbdf);
 		return -1;
 	}
 	if(htmsienable(pci) < 0)
@@ -531,9 +529,13 @@ msiintrenable(Vctl *v)
 	if(pcimsidisable(pci) < 0)
 		return -1;
 
+	v->dest = allocdest(&v->machno);
+	if(v->dest < 0){
+		print("msiintrenable: no destination for tbdf %T\n", tbdf);
+		return -1;
+	}
+
 	v->vno = allocvector();
-	v->cpu = mpintrcpu();
-	v->isr = lapicisr;
 	v->eoi = lapiceoi;
 
 	v->aux = pci;
@@ -595,7 +597,7 @@ mpintrassign(Vctl* v)
 		if(vno != -1)
 			return vno;
 	}
-	print("mpintrassign: out of choices eisa %d isa %d tbdf %uX irq %d\n",
+	print("mpintrassign: out of choices eisa %d isa %d tbdf %T irq %d\n",
 		mpeisabus, mpisabus, v->tbdf, v->irq);
 	return -1;
 }
@@ -617,7 +619,7 @@ mpshutdown(void)
 	/*
 	 * INIT all excluding self.
 	 */
-	lapicicrw(0, 0x000C0000|ApicINIT);
+	lapicicr(0x000C0000|ApicINIT);
 
 	pcireset();
 }

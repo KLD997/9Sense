@@ -79,7 +79,7 @@ struct Machine
 	uvlong		prevsysstat[10];
 	uvlong		netetherstats[9];
 	uvlong		prevetherstats[9];
-	uvlong		batterystats[2];
+	uvlong		batterystats[6];
 	uvlong		temp[10];
 
 	/* big enough to hold /dev/sysstat even with many processors */
@@ -675,6 +675,7 @@ initmach(Machine *m)
 		"dev/battery",
 		"mnt/pm/battery",
 		"mnt/apm/battery",
+		"shr/usb/battery",
 	};
 	static char *cputemps[] = {
 		"dev/cputemp",
@@ -757,8 +758,11 @@ initmach(Machine *m)
 	for(i=0; i < nelem(batteries); i++){
 		if((m->batteryfd = eopen(batteries[i], OREAD)) < 0)
 			continue;
-		if(loadbuf(m, &m->batteryfd) && readnums(m, nelem(m->batterystats), a, 0))
+		if(loadbuf(m, &m->batteryfd) && readnums(m, 3, a, 0)){
+			if(!readnums(m, 3, a+3, 0))
+				memset(a+3, 0, 3*sizeof(*a));
 			memmove(m->batterystats, a, sizeof(m->batterystats));
+		}
 		break;
 	}
 	for(i=0; i < nelem(cputemps); i++){
@@ -852,8 +856,11 @@ readmach(Machine *m, int init)
 		if(init) memmove(m->prevetherstats, m->netetherstats, sizeof m->netetherstats);
 	}
 	if(needbattery(init)){
-		if(loadbuf(m, &m->batteryfd) && readnums(m, nelem(m->batterystats), a, 0))
+		if(loadbuf(m, &m->batteryfd) && readnums(m, 3, a, 0)){
+			if(!readnums(m, 3, a+3, 0))
+				memset(a+3, 0, 3*sizeof(*a));
 			memmove(m->batterystats, a, sizeof(m->batterystats));
+		}
 	}
 	if(needtemp(init) && loadbuf(m, &m->tempfd))
 		for(n=0; n < nelem(m->temp) && readnums(m, 2, a, 0); n++)
@@ -1040,8 +1047,8 @@ etherovfval(Machine *m, uvlong *v, uvlong *vmax, int)
 void
 batteryval(Machine *m, uvlong *v, uvlong *vmax, int)
 {
-	*v = m->batterystats[0];
-	*vmax = 100;
+	*vmax=m->batterystats[2] + m->batterystats[5];
+	*v = m->batterystats[1] + m->batterystats[4];
 }
 
 void

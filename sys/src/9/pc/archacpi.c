@@ -195,14 +195,11 @@ findtable(char sig[4])
 }
 
 static Apic*
-findapic(int gsi, int *pintin)
+findioapic(int gsi, int *pintin)
 {
 	Apic *a;
-	int i;
 
-	for(i=0; i<=MaxAPICNO; i++){
-		if((a = mpioapic[i]) == nil)
-			continue;
+	for(a = mpioapic; a != nil; a = a->next) {
 		if((a->flags & PcmpEN) == 0)
 			continue;
 		if(gsi >= a->gsibase && gsi <= a->gsibase+a->mre){
@@ -211,7 +208,7 @@ findapic(int gsi, int *pintin)
 			return a;
 		}
 	}
-	print("findapic: no ioapic found for gsi %d\n", gsi);
+	print("findioapic: no ioapic found for gsi %d\n", gsi);
 	return nil;
 }
 
@@ -221,10 +218,9 @@ addirq(int gsi, int type, int busno, int irq, int flags)
 	Apic *a;
 	Bus *bus;
 	Aintr *ai;
-	PCMPintr *pi;
 	int intin;
 
-	if((a = findapic(gsi, &intin)) == nil)
+	if((a = findioapic(gsi, &intin)) == nil)
 		return;
 
 	for(bus = mpbus; bus; bus = bus->next)
@@ -244,30 +240,21 @@ addirq(int gsi, int type, int busno, int irq, int flags)
 		bus->po = PcmpLOW;
 		bus->el = PcmpLEVEL;
 	}
-	if(mpbus)
-		mpbuslast->next = bus;
-	else
-		mpbus = bus;
-	mpbuslast = bus;
+	*mpbusp = bus, mpbusp = &bus->next;
 
 Foundbus:
 	for(ai = bus->aintr; ai; ai = ai->next)
-		if(ai->intr->irq == irq)
+		if(ai->irq == irq)
 			return;
 
-	if((pi = xalloc(sizeof(PCMPintr))) == nil)
-		panic("addirq: no memory for PCMPintr");
-	pi->type = PcmpIOINTR;
-	pi->intr = PcmpINT;
-	pi->flags = flags & (PcmpPOMASK|PcmpELMASK);
-	pi->busno = busno;
-	pi->irq = irq;
-	pi->apicno = a->apicno;
-	pi->intin = intin;
 
 	if((ai = xalloc(sizeof(Aintr))) == nil)
 		panic("addirq: no memory for Aintr");
-	ai->intr = pi;
+	ai->type = PcmpINT;
+	ai->flags = flags & (PcmpPOMASK|PcmpELMASK);
+	ai->irq = irq;
+	ai->gsi = gsi;
+	ai->intin = intin;
 	ai->apic = a;
 	ai->next = bus->aintr;
 	ai->bus = bus;
@@ -555,9 +542,9 @@ acpiinit(void)
 {
 	Tbl *t;
 	Apic *a;
-	void *va;
 	uchar *s, *p, *e;
-	ulong lapicbase;
+	void *lapicva;
+	ulong lapicpa;
 	int machno, i, c;
 
 	amlinit();
@@ -584,11 +571,9 @@ acpiinit(void)
 
 	s = t->data;
 	e = s + tbldlen(t);
-	lapicbase = get32(s); s += 8;
-	va = vmap(lapicbase, 1024);
-	print("LAPIC: %.8lux %#p\n", lapicbase, va);
-	if(va == nil)
-		panic("acpiinit: cannot map lapic %.8lux", lapicbase);
+	lapicva = nil;
+	lapicpa = get32(s); s += 8;
+	upaalloc(lapicpa, 1024, 0);
 
 	machno = 0;
 	for(p = s; p < e; p += c){
@@ -599,18 +584,30 @@ acpiinit(void)
 		case 0x00:	/* Processor Local APIC */
 			if(p[3] > MaxAPICNO)
 				break;
+		case 0x09:	/* x2APIC */
 			if((a = xalloc(sizeof(Apic))) == nil)
 				panic("acpiinit: no memory for Apic");
 			a->type = PcmpPROCESSOR;
-			a->apicno = p[3];
-			a->paddr = lapicbase;
-			a->addr = va;
 			a->lintr[0] = ApicIMASK;
 			a->lintr[1] = ApicIMASK;
-			a->flags = p[4] & PcmpEN;
-
+			a->paddr = lapicpa;
+			if(*p == 0x09){
+				a->addr = nil;
+				a->apicno = get32(p+4);
+				a->flags = get32(p+8) & PcmpEN;
+			} else {
+				if(lapicva == nil){
+					lapicva = vmap(lapicpa, 1024);
+					print("LAPIC: %.8lux %#p\n", lapicpa, lapicva);
+					if(lapicva == nil)
+						panic("acpiinit: cannot map lapic %.8lux", lapicpa);
+				}
+				a->addr = lapicva;
+				a->apicno = p[3];
+				a->flags = p[4] & PcmpEN;
+			}
 			/* skip disabled processors */
-			if((a->flags & PcmpEN) == 0 || mpapic[a->apicno] != nil){
+			if((a->flags & PcmpEN) == 0){
 				xfree(a);
 				break;
 			}
@@ -623,7 +620,7 @@ acpiinit(void)
 			if(a->machno == 0)
 				a->flags |= PcmpBP;
 
-			mpapic[a->apicno] = a;
+			*mplapicp = a, mplapicp = &a->next;
 			break;
 		case 0x01:	/* I/O APIC */
 			if(p[2] > MaxAPICNO)
@@ -633,11 +630,13 @@ acpiinit(void)
 			a->type = PcmpIOAPIC;
 			a->apicno = p[2];
 			a->paddr = get32(p+4);
+			upaalloc(a->paddr, 1024, 0);
 			if((a->addr = vmap(a->paddr, 1024)) == nil)
 				panic("acpiinit: cannot map ioapic %.8lux", a->paddr);
 			a->gsibase = get32(p+8);
 			a->flags = PcmpEN;
-			mpioapic[a->apicno] = a;
+			*mpioapicp = a, mpioapicp = &a->next;
+
 			ioapicinit(a, a->apicno);
 			break;
 		}
@@ -654,17 +653,6 @@ acpiinit(void)
 		switch(*p){
 		case 0x02:	/* Interrupt Source Override */
 			addirq(get32(p+4), BusISA, 0, p[3], get16(p+8));
-			break;
-		case 0x03:	/* NMI Source */
-		case 0x04:	/* Local APIC NMI */
-		case 0x05:	/* Local APIC Address Override */
-		case 0x06:	/* I/O SAPIC */
-		case 0x07:	/* Local SAPIC */
-		case 0x08:	/* Platform Interrupt Sources */
-		case 0x09:	/* Processor Local x2APIC */
-		case 0x0A:	/* x2APIC NMI */
-		case 0x0B:	/* GIC */
-		case 0x0C:	/* GICD */
 			break;
 		}
 	}
